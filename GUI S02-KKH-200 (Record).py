@@ -9,16 +9,19 @@ import pandas as pd
 import math
 from pathlib import Path
 from PyQt5.QtWidgets import * 
-from PyQt5 import QtCore, QtGui 
+from PyQt5 import QtCore, QtGui
 from PyQt5.QtGui import * 
 from PyQt5.QtCore import *
+from PyQt5.QtCore import QThread, pyqtSignal
 from skimage.transform import (hough_line, hough_line_peaks)
+import numpy as np
 import PySpin
 from pandas import DataFrame
 import cv2
-import numpy as np
 from matplotlib import pyplot as plt
+import cgitb
 
+cgitb.enable(format = 'text')
 ##################################################
 ## {Description}
 ##################################################
@@ -319,7 +322,8 @@ def camera_properties(c_width, c_height, c_fps):
     print('Cam Properties End')
 
     return
-    
+
+
 ### FUNCTION ===> CAMERA_VIEW
 def camera_view():
     global no_cancel, got_camera, num_cameras, cam
@@ -2486,6 +2490,7 @@ class myLabel(QLabel):
             #print(QMouseEvent.x(), QMouseEvent.y())
             self.clicked.emit()
 
+        
 class motor_move_down(QPushButton):
     def __init__(self, content):
         super(motor_move_down, self).__init__()
@@ -2646,6 +2651,7 @@ class set_outlet_pressure(QPushButton):
     def mouseReleaseEvent(self, QMouseEvent):
         if QMouseEvent.button() == Qt.LeftButton:
             send_signal("s")
+            out_Pa_value.clear()
 ##            self.setStyleSheet(class_btn_1)
 
 class set_inlet_pressure(QPushButton):
@@ -2661,16 +2667,123 @@ class set_inlet_pressure(QPushButton):
     def mouseReleaseEvent(self, QMouseEvent):
         if QMouseEvent.button() == Qt.LeftButton:
             send_signal("s")
+            in_Pa_value.clear()
 ##            self.setStyleSheet(class_btn_1)
             
+class Worker(QObject):
+    global sscamera, got_camera, arduino
+    finished = pyqtSignal()
+    progress = pyqtSignal(int)
+
+    def run(self):
+        system = PySpin.System.GetInstance()
+        while True:
+            try:
+                # [GET] camera list
+                cam_list = system.GetCameras()
+                cam = cam_list.GetByIndex(0)
+                got_camera = True
+            except:
+                got_camera = False
+            
+
+            if got_camera == True:
+                sscamera = 'Online'
+                char_to_send = "<pressure>"
+                arduino.write(char_to_send.encode("utf-8"))
+                try:
+                    data =''
+                    data = arduino.readline()[:-2] ##readline() takes max 0.1 seconds to complete
+                    if data:
+                        try:
+                            print('Camera is :', sscamera)
+                            print("Pressure ->", float(data.decode('UTF-8')), 'mBar')
+                            print('')
+                        except TypeError:
+                            pass
+                    #pressure = float(read_signal())    
+                    #print("Pressure ==> ", pressure, "mBar")
+                    
+                except:
+                    pass
+                    
+                #send_signal('pressure')
+                #pressure = str(read_signal())    
+                #print("Pressure ==> ", pressure, "mBar")
+            else:
+                sscamera = 'Offline'
+                print('Camera is :', sscamera)
+                print("Pressure ->", float(data.decode('UTF-8')), 'mBar')
+                print('')
+
+            sys_cam_on = QLabel()
+            sys_cam_on.setText('Hello')
+            box_system_Layout.addWidget(sys_cam_on, 3,7,1,1)
+            box_system.setLayout(box_system_Layout)
+            time.sleep(1)
+                #self.progress.emit(i + 1)
+                #print('Hello')
+            #self.finished.emit()
+
 class mainwindow(QWidget):
     def __init__(self):
         super(mainwindow, self).__init__()
+        #self.tabWidget = QTabWidget(self)
+        #self.tabWidget.tabBar().installEventFilter(self)
 ##        self.setText(content)
 ##        self.setFont(QFont('Times', 11))
 ##        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 ##        self.setFixedSize(150,22)
-        
+        # override the key press event
+
+        #self.label = QtGui.QLabel(self)
+        #self.watcher = QtCore.QFileSystemWatcher(self)
+        #self.watcher.addPath('/path/to/file')
+        #self.watcher.fileChanged.connect(self.updateLabel)
+
+    def runLongTask(self):
+        # Step 2: Create a QThread object
+        self.thread = QThread()
+        # Step 3: Create a worker object
+        self.worker = Worker()
+        # Step 4: Move worker to the thread
+        self.worker.moveToThread(self.thread)
+        # Step 5: Connect signals and slots
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        # Step 6: Start the thread
+        self.thread.start()
+
+
+    def keyPressEvent(self, event):
+        # if up arrow key is pressed
+        if event.key() == Qt.Key_Up and not event.isAutoRepeat():
+            clear_signal()
+            send_signal("up")
+        elif event.key() == Qt.Key_Down and not event.isAutoRepeat():
+            clear_signal()
+            send_signal("down")
+
+    def keyReleaseEvent(self, event):
+        # if up arrow key is pressed
+        if event.key() == Qt.Key_Up and not event.isAutoRepeat():
+            send_signal("s")
+        elif event.key() == Qt.Key_Down and not event.isAutoRepeat():
+            send_signal("s")
+
+            
+    def eventFilter(self, object, event):
+        if object == self.tabWidget.tabBar() and event.type() == QEvent.KeyPress:
+            keyEvent = QKeyEvent (event)
+            if keyEvent.key() == Qt.Key_Left:
+                print('Left')
+            elif keyEvent.key() == Qt.Key_Right:
+                print('Right')
+
+        return False
+
 class Label(QLabel):
     def __init__(self, content):
         super(Label, self).__init__()
@@ -2782,7 +2895,7 @@ chip_x = 0
 chip_y = 0
 
 ### =====> Camera Settings
-exposure_time = 50000        #micro seconds min=10us
+exposure_time = 250        #micro seconds min=10us
 FPS = 25                    #Frame rate to capture
 gain = 0                    #Sensor gain
 image_format = 'Mono8'      #image pixel format. 'Mono8' or 'Bayer' for BGR
@@ -2795,7 +2908,10 @@ video_mode = 'AVI'          #AVI or MJPG
 video_name = 'a.avi'        #Filename to save as
 got_camera = False
 no_cancel = False
+sscamera = 'OFFLINE'
 feature_matching = 0
+win_length = 1444
+win_width = 788
 
 capture_x,capture_y, capture_w, capture_h = 0,0,0,0
 ROT_x, ROT_y , ROT_w, ROT_h = 0,0,width,height
@@ -2861,6 +2977,7 @@ system = PySpin.System.GetInstance()
 w = mainwindow()
 w.setStyleSheet("background-color: rgb(240,240,240)")
 w.setWindowTitle("SMART DLD Assay GUI " + __version__)
+w.runLongTask()
 # To maximise view in screen, optimised for p1080
 screen_dim = QDesktopWidget().availableGeometry() # geometry (x,y,width,height)
 if screen_dim.width() <= 1920 and screen_dim.height() <= 1080:
@@ -2878,7 +2995,7 @@ basic_w_run = QWidget()
 ## Define "Advanced" Tab widget
 advance_w = QWidget()
 advance_view = QWidget()                ##set widget in advance tab
-advance_view.setGeometry(11,58,1854,802)
+#advance_view.setGeometry(11,58,1854,802)
 
 ### ---- Create some widgets to be placed inside ---- ###
 # =====  Menu  ===== #
@@ -2932,13 +3049,13 @@ sys_y = QLabel('Y:');sys_y.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
 sys_y_pos = QLabel('4000')
 sys_z = QLabel('Z:');sys_z.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
 sys_z_pos = QLabel('-2000')
-sys_Pa = QLabel('Pressure :');sys_Pa.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+sys_Pa = QLabel('Pressure  :');sys_Pa.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 sys_Pa_value = QLabel('-440' + ' mBar')
-sys_act = QLabel('Activation :');sys_act.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+sys_act = QLabel('Activation :');sys_act.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 sys_act_value = QLabel('FALSE') ## motor_move_up('UP');
-sys_cam = QLabel('Camera :');sys_cam.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
-sys_cam_on = QLabel('OFFLINE')
-sys_valves = QLabel('Valves :');sys_valves.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+sys_cam = QLabel('Camera :');sys_cam.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+sys_cam_on = QLabel(sscamera)
+sys_valves = QLabel('Valves :');sys_valves.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 sys_valves_on = QLabel('OFF')
 file_name = QLabel('Name File:')
 file_type = QLabel('File Type:')
@@ -2974,10 +3091,13 @@ q_field5 = LineEdit(cwDir)
 move_x_value = QLineEdit('0')
 move_y_value = QLineEdit('0')
 move_z_value = QLineEdit('0')
-out_Pa_value = QLineEdit('mBar')
+in_Pa_value = QLineEdit()
+in_Pa_value.setPlaceholderText('mBar')
+out_Pa_value = QLineEdit()
+out_Pa_value.setPlaceholderText('mBar')
 release_Pa_value = QLineEdit('Yes')
-in_Pa_value = QLineEdit('mBar')
-file_value = QLineEdit('Name Your File')
+file_value = QLineEdit()
+file_value.setPlaceholderText('Name Your File')
 folder_value = QLineEdit(str(cwDir))
 cam_fps_value = QLineEdit(str(FPS))
 cam_exp_value = QLineEdit(str(exposure_time))
@@ -3021,13 +3141,13 @@ btn2 = QPushButton('Cancel'); btn2.setFixedSize(80,25)
 btn3 = QPushButton('Save'); btn3.setFixedSize(80,25)
 btn4 = QPushButton('Close'); btn4.setFixedSize(80,25)
 btn5 = QPushButton('Record'); btn5.setFixedSize(80,25)
-up_btn = motor_move_up('U'); up_btn.setFixedSize(45,45); up_btn.setStyleSheet(class_btn_1) 
-down_btn = motor_move_down('D'); down_btn.setFixedSize(45,45); down_btn.setStyleSheet(class_btn_1)
-left_btn = motor_move_left('L'); left_btn.setFixedSize(45,45); left_btn.setStyleSheet(class_btn_1)
-right_btn = motor_move_right('R'); right_btn.setFixedSize(45,45); right_btn.setStyleSheet(class_btn_1)
-focus_btn = QPushButton('AF'); focus_btn.setFixedSize(45,45) 
-z_up_btn = zaxis_move_up('U_F'); z_up_btn.setFixedSize(45,45)
-z_down_btn = zaxis_move_down('D_F'); z_down_btn.setFixedSize(45,45)
+up_btn = motor_move_up('U'); up_btn.setFixedSize(40,40); up_btn.setStyleSheet(class_btn_1) 
+down_btn = motor_move_down('D'); down_btn.setFixedSize(40,40); down_btn.setStyleSheet(class_btn_1)
+left_btn = motor_move_left('L'); left_btn.setFixedSize(40,40); left_btn.setStyleSheet(class_btn_1)
+right_btn = motor_move_right('R'); right_btn.setFixedSize(40,40); right_btn.setStyleSheet(class_btn_1)
+focus_btn = QPushButton('AF'); focus_btn.setFixedSize(40,40) 
+z_up_btn = zaxis_move_up('U_F'); z_up_btn.setFixedSize(40,40)
+z_down_btn = zaxis_move_down('D_F'); z_down_btn.setFixedSize(40,40)
 move_xy_btn = motor_move_xy('Move_xy [ x , y ]:')
 move_z_btn = motor_move_z('Move_Z')
 out_Pa_btn = set_outlet_pressure('Set Outlet Pressure (mBar)')
@@ -3085,11 +3205,13 @@ bigLayout.addWidget(tab,1,0)
 
 ### ---- ADVANCE Tab layout LVL 1 ---- ###
 box_button = QGroupBox('Buttons')
-box_button.setStyleSheet("QGroupBox{ border: 0.5px solid; border-color: rgba(0, 0, 0, 75%);}")
+#box_button.setStyleSheet("QGroupBox{ border: 0.5px solid; border-color: rgba(0, 0, 0, 75%);}")
 box_camera = QGroupBox('Camera Settings') # note: box_camera will be set in box_button
-box_camera.setFixedSize(win_length*0.203,win_width*0.43)
+box_camera.setFixedSize(w_dim.height()*1.1,w_dim.width()*0.6)
 box_system = QGroupBox('System Settings') # note: box_system will be set in box_button
+box_system.setFixedSize(w_dim.height()*1.1,w_dim.width()*0.13)
 box_motor = QGroupBox('System Controls') # note: box_motor will be set in box_button
+box_motor.setFixedSize(w_dim.height()*1.1,w_dim.width()*0.58)
 box_motor_control = QGroupBox('Motor Controls') # note: box_motor_control will be set in box_motor
 box_view = QGroupBox('View Video')
 advanceLayout =  QGridLayout()
@@ -3097,6 +3219,7 @@ advanceLayout.addWidget(box_view,0,0,1,5)
 advanceLayout.addWidget(box_button,0,5,0,1)
 advanceLayout.addWidget(a_bar,1,0,1,5)
 advanceLayout.addWidget(console_list,2,0,1,5)
+
 ### ---- ADVANCE Tab layout LVL 2 ---- ###
 ### ----------box_view-------------- ###
 box_view_Layout = QGridLayout() ##define layout for camera view
@@ -3104,20 +3227,21 @@ box_view_Layout.addWidget(a_view_label,0,0)
 box_view.setLayout(box_view_Layout)
 ### ----------box_Button-------------- ###
 box_button_Layout = QGridLayout() ##define layout - Box type
-box_button_Layout.addWidget(btn1, 0, 1,1,1)
-box_button_Layout.addWidget(btn2, 0, 2,1,1)
-box_button_Layout.addWidget(btn3, 0, 3,1,1)
-#box_button_Layout.addWidget(btn4, 0, 4,1,1)
-box_button_Layout.addWidget(btn5, 0, 4,1,1)
+box_button_Layout.addWidget(btn1, 0, 0,1,1)
+box_button_Layout.addWidget(btn2, 0, 1,1,1)
+box_button_Layout.addWidget(btn3, 0, 2,1,1)
+box_button_Layout.addWidget(btn4, 0, 4,1,1)
+box_button_Layout.addWidget(btn5, 0, 3,1,1)
 box_button_Layout.addWidget(box_system,1,0,1,5)
-box_button_Layout.addWidget(box_motor,2,0,4,5)
-box_button_Layout.addWidget(box_camera,6,0,5,5)
+box_button_Layout.addWidget(box_motor,2,0,1,5)
+box_button_Layout.addWidget(box_camera,6,0,1,5)
 box_button.setLayout(box_button_Layout)
+
 ### ---- ADVANCE Tab layout LVL 3 ---- ###
 ### ----------box_system-LVL 3-------- ###
 box_system_Layout = QGridLayout() ## grid is split into 12 grid size 0-11 columns
 ## (widget, row, column, row length, column length)
-box_system_Layout.addWidget(sys_act,        2, 0, 1, 3)
+box_system_Layout.addWidget(sys_act,        2, 0, 1, 1)
 box_system_Layout.addWidget(sys_act_value,  2, 3, 1, 1)
 box_system_Layout.addWidget(sys_x,          2, 5, 1, 1)
 box_system_Layout.addWidget(sys_x_pos,      2, 6, 1, 1)
@@ -3125,11 +3249,11 @@ box_system_Layout.addWidget(sys_y,          2, 7, 1, 1)
 box_system_Layout.addWidget(sys_y_pos,      2, 8, 1, 1)
 box_system_Layout.addWidget(sys_z,          2, 10, 1, 1)
 box_system_Layout.addWidget(sys_z_pos,      2, 11, 1, 1)
-box_system_Layout.addWidget(sys_Pa,         3, 0, 1, 3)
+box_system_Layout.addWidget(sys_Pa,         3, 0, 1, 1)
 box_system_Layout.addWidget(sys_Pa_value,   3, 3, 1, 1)
-box_system_Layout.addWidget(sys_cam,        3, 4, 1, 3)
-box_system_Layout.addWidget(sys_cam_on,     3, 7, 1, 1)
-box_system_Layout.addWidget(sys_valves,     3, 8, 1, 3)
+box_system_Layout.addWidget(sys_cam,        3, 6, 1, 1)
+
+box_system_Layout.addWidget(sys_valves,     3, 10, 1, 1)
 box_system_Layout.addWidget(sys_valves_on,  3, 11, 1, 1)
 ##box_system_Layout.addWidget(sys_btn_0, 0, 0, 1, 4)
 ##box_system_Layout.addWidget(sys_field_0, 0, 4, 1, 8)
@@ -3142,6 +3266,7 @@ box_system_Layout.addWidget(sys_valves_on,  3, 11, 1, 1)
 ##box_system_Layout.addWidget(sys_label_10, 10, 0, 1, 4)
 ##box_system_Layout.addWidget(sys_slide_10, 10, 4, 1, 8)
 box_system.setLayout(box_system_Layout)
+
 ### ----------box_motor-LVL 3--------- ###
 box_motor_Layout = QGridLayout()
 box_motor_Layout.addWidget(activation_btn,      1,0,1,2)
@@ -3157,6 +3282,7 @@ box_motor_Layout.addWidget(out_Pa_value,        4,2,1,2)
 box_motor_Layout.addWidget(in_Pa_btn,           5,0,1,2)
 box_motor_Layout.addWidget(in_Pa_value,         5,2,1,2)
 box_motor_Layout.addWidget(release_Pa_btn,      4,4,2,2)
+
 ### ------ Motor Control - LVL 4 ----- ###
 box_motor_ctrl_Layout = QGridLayout()
 box_motor_ctrl_Layout.addWidget(up_btn,     0,4,1,1)
@@ -3170,6 +3296,7 @@ box_motor_control.setLayout(box_motor_ctrl_Layout)
 ### ---------------------------------- ###
 box_motor_Layout.addWidget(box_motor_control,   0,0,1,6)
 box_motor.setLayout(box_motor_Layout)
+
 ### ----------box_camera-LVL 3-------- ###
 box_camera_Layout = QGridLayout()
 box_camera_Layout.addWidget(folder_btn,         0,0,1,1)
@@ -3296,7 +3423,7 @@ back_b.clicked.connect(back_expt)
 btn1.clicked.connect(camera_view)
 btn2.clicked.connect(cancel)
 btn3.clicked.connect(save_data)
-#btn4.clicked.connect(close_event)
+btn4.clicked.connect(pressure)
 btn5.clicked.connect(record)
 home_btn.clicked.connect(home_xy)
 release_Pa_btn.clicked.connect(release_pressure)
